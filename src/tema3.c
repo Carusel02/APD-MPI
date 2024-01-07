@@ -13,6 +13,19 @@
 #define MAX_CHUNKS 100
 #define MAX_CLIENTS 12
 
+typedef enum {
+    DOWNLOAD = 1,
+    SEND = 2,
+    CHUNK = 3,
+    DOWN = 4
+} TAG;
+
+typedef enum {
+    ANSWER = 900,
+    SHUTDOWN = 901,
+    COMPLETE = 902
+} STATE;
+
 // structure for a chunk
 typedef struct {
     char hash[HASH_SIZE];   // hash of the chunk
@@ -20,6 +33,12 @@ typedef struct {
     int peers[MAX_CHUNKS];  // peers that have the chunk
     int peers_count;        // number of peers that have the chunk
 } chunk_info;
+
+typedef struct {
+    STATE state;
+    int file_id;
+    int chunk_id;
+} request;
 
 typedef struct {
     int flag;
@@ -39,11 +58,79 @@ typedef struct {
 
 } file_info;
 
+// create vector of files we own
+file_info files[MAX_FILES];
+int number_of_files_owned = 0;
+
+// create vector of files we want to download
+file_info files_to_download[MAX_FILES];
+int number_of_files_to_download = 0;
+
 file_info database[MAX_FILES]; // database of tracker
 
 void *download_thread_func(void *arg)
 {
     int rank = *(int*) arg;
+    int requests = 0;
+
+    printf("DOWNLOAD FROM PEER %d STARTED!\n", rank);
+
+    // database of the client
+    file_info my_database[MAX_FILES];
+    // take the database from the tracker
+    MPI_Recv(&my_database, sizeof(file_info) * MAX_FILES, MPI_BYTE, TRACKER_RANK, DOWNLOAD, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+
+    // for every file
+    for(int i = 0 ; i < number_of_files_to_download ; i++) {
+        
+        file_info file_to_complete;
+        file_to_complete.id = files_to_download[i].id;
+        file_to_complete.chunks_count = 0;
+        
+        char name[100];
+        sprintf(name, "client%d_%s", rank, files_to_download[i].filename);
+        printf("[OUTPUT] File to complete: %s\n", name);
+        FILE *f = fopen(name, "w");
+        
+        // look for the file in the database
+        for(int j = 0 ; j < MAX_FILES ; j++) {
+            if(my_database[j].id == files_to_download[i].id) {
+                // send request to a client that has the file
+                for(int k = 0 ; k < MAX_CLIENTS ; k++)
+                    if(my_database[j].owned[k].flag == 1) {
+                        // send request for every chunk
+                        for(int nr_chunk = 0 ; nr_chunk < my_database[j].chunks_count ; nr_chunk++) {
+                                // send request
+                                request req;
+                                req.state = ANSWER;
+                                req.file_id = my_database[j].id;
+                                req.chunk_id = nr_chunk;
+                                MPI_Send(&req, sizeof(request), MPI_BYTE, k, SEND, MPI_COMM_WORLD);
+                                MPI_Recv(&file_to_complete.chunk[nr_chunk], sizeof(chunk_info), MPI_BYTE, k, CHUNK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                                
+                                printf("Chunk %d received from peer %d\n", nr_chunk, k);
+                                printf("Chunk %d hash: %s\n", nr_chunk, file_to_complete.chunk[nr_chunk].hash);
+                                fprintf(f, "%s\n", file_to_complete.chunk[nr_chunk].hash);
+                                
+                                file_to_complete.chunks_count++;
+                                if(file_to_complete.chunks_count == my_database[j].chunks_count) {
+                                    printf("File %s completed!\n", file_to_complete.filename);
+                                    my_database[j].needed[rank].flag = 0;
+                                }
+                        }
+                    }
+            }
+        }
+
+    }
+
+    printf("FINISH ALL FROM DOWNLOAD!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+
+    request req;
+    req.state = COMPLETE;
+    MPI_Send(&req, sizeof(request), MPI_BYTE, TRACKER_RANK, SEND, MPI_COMM_WORLD);
+
 
     return NULL;
 }
@@ -51,6 +138,28 @@ void *download_thread_func(void *arg)
 void *upload_thread_func(void *arg)
 {
     int rank = *(int*) arg;
+
+    while(true) {
+        MPI_Status status;
+        // receive request
+        request req;
+        MPI_Recv(&req, sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, SEND, MPI_COMM_WORLD, &status);
+        
+        // if the request is fot shutdown, exit
+        if(req.state == SHUTDOWN)
+            break;
+
+        // if the request is for an answer
+        if(req.state == ANSWER) {
+            // look for the file in the database
+            for(int i = 0 ; i < number_of_files_owned ; i++) {
+                if(files[i].id == req.file_id) {
+                    // send the chunk
+                    MPI_Send(&files[i].chunk[req.chunk_id], sizeof(chunk_info), MPI_BYTE, status.MPI_SOURCE, CHUNK, MPI_COMM_WORLD);
+                }
+            }
+        }
+    }
 
     return NULL;
 }
@@ -121,6 +230,8 @@ void tracker(int numtasks, int rank) {
         MPI_Send(ack, 10, MPI_CHAR, i, 0, MPI_COMM_WORLD);
     }
 
+    // **************** FOR VERIFICATION **************** //
+
     // for every file
     for(int i = 0 ; i < MAX_FILES; i++) {
         // if the file exists
@@ -153,8 +264,24 @@ void tracker(int numtasks, int rank) {
         }
     }
 
+    // **************** RESPONSE TO REQUEST **************** //
+    for(int i = 1 ; i < numtasks ; i++)
+        MPI_Send(&database, sizeof(file_info) * MAX_FILES, MPI_BYTE, i, DOWNLOAD, MPI_COMM_WORLD);
 
-    
+    // **************** WAIT TO COMPLETE **************** //
+    for(int i = 1 ; i < numtasks ; i++) {
+        request req;
+        MPI_Recv(&req, sizeof(request), MPI_BYTE, i, SEND, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if(req.state == COMPLETE)
+            printf("[TRACKER] Peer %d has completed the download\n", i);
+    }
+
+    // **************** SHUTDOWN UPLOAD FROM EVERY CLIENT **************** //
+    for(int i = 1 ; i < numtasks ; i++) {
+        request req;
+        req.state = SHUTDOWN;
+        MPI_Send(&req, sizeof(request), MPI_BYTE, i, SEND, MPI_COMM_WORLD);
+    }
 
 }
 
@@ -168,10 +295,13 @@ void peer(int numtasks, int rank) {
 
     // ************* READ DATA FROM FILE ************* //
 
-    // create vector of files we own
-    file_info files[MAX_FILES];
-    // create vector of files we want to download
-    file_info files_to_download[MAX_FILES];
+    // init structures
+    for(int i = 0 ; i < MAX_FILES ; i++) {
+        files[i].id = -1;
+        files[i].chunks_count = 0;
+        files_to_download[i].id = -1;
+        files_to_download[i].chunks_count = 0;
+    }
 
     // read file from input file
     char client_file[10];
@@ -183,7 +313,6 @@ void peer(int numtasks, int rank) {
     }
 
     // read number of files owned
-    int number_of_files_owned = 0;
     fscanf(f, "%d", &number_of_files_owned);
     if (number_of_files_owned > MAX_FILES) {
         printf("Numarul de fisiere este prea mare\n");
@@ -221,7 +350,6 @@ void peer(int numtasks, int rank) {
     }
 
     // read number of files to download
-    int number_of_files_to_download = 0;
     fscanf(f, "%d", &number_of_files_to_download);
     if (number_of_files_to_download > MAX_FILES) {
         printf("Numarul de fisiere este prea mare\n");
