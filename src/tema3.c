@@ -87,6 +87,7 @@ void *download_thread_func(void *arg)
         file_info file_to_complete;
         file_to_complete.id = files_to_download[i].id;
         file_to_complete.chunks_count = 0;
+        int found = 0;
         
         char name[100];
         sprintf(name, "client%d_%s", rank, files_to_download[i].filename);
@@ -94,10 +95,10 @@ void *download_thread_func(void *arg)
         FILE *f = fopen(name, "w");
         
         // look for the file in the database
-        for(int j = 0 ; j < MAX_FILES ; j++) {
+        for(int j = 0 ; j < MAX_FILES && found == 0; j++) {
             if(my_database[j].id == files_to_download[i].id) {
                 // send request to a client that has the file
-                for(int k = 0 ; k < MAX_CLIENTS ; k++)
+                for(int k = 0 ; k < MAX_CLIENTS && found == 0; k++)
                     if(my_database[j].owned[k].flag == 1) {
                         // send request for every chunk
                         for(int nr_chunk = 0 ; nr_chunk < my_database[j].chunks_count ; nr_chunk++) {
@@ -117,11 +118,13 @@ void *download_thread_func(void *arg)
                                 if(file_to_complete.chunks_count == my_database[j].chunks_count) {
                                     printf("File %s completed!\n", file_to_complete.filename);
                                     my_database[j].needed[rank].flag = 0;
+                                    found = 1;
                                 }
                         }
                     }
             }
         }
+
 
     }
 
