@@ -3,9 +3,9 @@
 ## [Tema3 - APD](https://gitlab.cs.pub.ro/apd/tema3)
 
 ### Ideea de baza
-Implementarea logicii unui `tracker` ce are ca rol gestionarea
-fisierelor intre `clienti` si logica clientilor de a descarca
-si uploada fisiere unii de la altii folosind MPI.
+Implementarea logicii unui `tracker`, ce are ca rol gestionarea
+fisierelor intre `clienti`, si a clientilor, de a descarca
+si uploada fisiere unii de la altii, folosind MPI.
 
 ### Implementare
 #### Am folosit urmatoarele structuri:
