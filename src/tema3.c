@@ -13,6 +13,7 @@
 #define MAX_CHUNKS 100
 #define MAX_CLIENTS 12
 
+// enumeration for the tags
 typedef enum {
     DOWNLOAD = 1,
     SEND = 2,
@@ -20,6 +21,7 @@ typedef enum {
     DOWN = 4
 } TAG;
 
+// enumeration for the state
 typedef enum {
     ANSWER = 900,
     SHUTDOWN = 901,
@@ -28,22 +30,22 @@ typedef enum {
 
 // structure for a chunk
 typedef struct {
-    char hash[HASH_SIZE];   // hash of the chunk
-    
+    char hash[HASH_SIZE];   // hash of the chunk    
     int peers[MAX_CHUNKS];  // peers that have the chunk
-    int peers_count;        // number of peers that have the chunk
 } chunk_info;
 
+// structure for a request
 typedef struct {
-    STATE state;
-    int file_id;
-    int chunk_id;
+    STATE state;            // state of the request
+    int file_id;            // id of the file requested
+    int chunk_id;           // id of the chunk requested
 } request;
 
+// structure for a client
 typedef struct {
-    int flag;
-    int chunk[MAX_CHUNKS];
-    int count;
+    int flag;               // flag for the client (1 is true, 0 is false)
+    int chunk[MAX_CHUNKS];  // chunks of the file
+    int count;              // number of chunks
 } client;
 
 // structure for a file
@@ -53,9 +55,8 @@ typedef struct {
     int chunks_count;              // number of chunks
     chunk_info chunk[MAX_CHUNKS];  // chunks of the file
 
-    client owned[MAX_CLIENTS];        // peers that have the file
-    client needed[MAX_CLIENTS];       // peers that need the file
-
+    client owned[MAX_CLIENTS];     // peers that have the file
+    client needed[MAX_CLIENTS];    // peers that need the file
 } file_info;
 
 // create vector of files we own
@@ -66,29 +67,32 @@ int number_of_files_owned = 0;
 file_info files_to_download[MAX_FILES];
 int number_of_files_to_download = 0;
 
-file_info database[MAX_FILES]; // database of tracker
+// database of tracker
+file_info database[MAX_FILES];
+// list of tracker (without chunks)
+file_info tracker_list[MAX_FILES];
 
+// thread for download
 void *download_thread_func(void *arg)
 {
     int rank = *(int*) arg;
-    int requests = 0;
-
-    printf("DOWNLOAD FROM PEER %d STARTED!\n", rank);
+    printf("[DOWNLOAD] FROM PEER %d STARTED!\n", rank);
 
     // database of the client
     file_info my_database[MAX_FILES];
     // take the database from the tracker
     MPI_Recv(&my_database, sizeof(file_info) * MAX_FILES, MPI_BYTE, TRACKER_RANK, DOWNLOAD, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-
     // for every file
     for(int i = 0 ; i < number_of_files_to_download ; i++) {
-        
+
+        // file we need to complete        
         file_info file_to_complete;
         file_to_complete.id = files_to_download[i].id;
         file_to_complete.chunks_count = 0;
         int found = 0;
         
+        // create the output file
         char name[100];
         sprintf(name, "client%d_%s", rank, files_to_download[i].filename);
         printf("[OUTPUT] File to complete: %s\n", name);
@@ -110,8 +114,8 @@ void *download_thread_func(void *arg)
                                 MPI_Send(&req, sizeof(request), MPI_BYTE, k, SEND, MPI_COMM_WORLD);
                                 MPI_Recv(&file_to_complete.chunk[nr_chunk], sizeof(chunk_info), MPI_BYTE, k, CHUNK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                                 
-                                printf("Chunk %d received from peer %d\n", nr_chunk, k);
-                                printf("Chunk %d hash: %s\n", nr_chunk, file_to_complete.chunk[nr_chunk].hash);
+                                // printf("Chunk %d received from peer %d\n", nr_chunk, k);
+                                // printf("Chunk %d hash: %s\n", nr_chunk, file_to_complete.chunk[nr_chunk].hash);
                                 fprintf(f, "%s\n", file_to_complete.chunk[nr_chunk].hash);
                                 
                                 file_to_complete.chunks_count++;
@@ -128,20 +132,22 @@ void *download_thread_func(void *arg)
 
     }
 
-    printf("FINISH ALL FROM DOWNLOAD!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    printf("[FINISH ALL FROM DOWNLOAD]\n");
 
+    // announce the tracker that we have completed the download
     request req;
     req.state = COMPLETE;
     MPI_Send(&req, sizeof(request), MPI_BYTE, TRACKER_RANK, SEND, MPI_COMM_WORLD);
 
-
+    // exit
     return NULL;
 }
 
+// thread for upload
 void *upload_thread_func(void *arg)
 {
-    int rank = *(int*) arg;
-
+    // int rank = *(int*) arg;
+    
     while(true) {
         MPI_Status status;
         // receive request
@@ -167,6 +173,7 @@ void *upload_thread_func(void *arg)
     return NULL;
 }
 
+// helper function to print a file
 void print_file(file_info file) {
     printf("\n");
     printf("File %s\n", file.filename);
@@ -175,6 +182,7 @@ void print_file(file_info file) {
     printf("\n");
 }
 
+// tracker function
 void tracker(int numtasks, int rank) {
 
     // init database
@@ -267,9 +275,19 @@ void tracker(int numtasks, int rank) {
         }
     }
 
-    // **************** RESPONSE TO REQUEST **************** //
+    // **************** RESPONSE TO REQUEST FROM CLIENTS **************** //
+    
+    // make a copy of the database without chunks
+    memcpy(tracker_list, database, sizeof(file_info) * MAX_FILES);
+    for(int i = 0 ; i < MAX_FILES ; i++) {
+        for(int j = 0 ; j < MAX_CHUNKS ; j++) {
+            memset(tracker_list[i].chunk[j].hash, '\0', HASH_SIZE);
+        }
+    }
+    
+    // send the list to every client
     for(int i = 1 ; i < numtasks ; i++)
-        MPI_Send(&database, sizeof(file_info) * MAX_FILES, MPI_BYTE, i, DOWNLOAD, MPI_COMM_WORLD);
+        MPI_Send(&tracker_list, sizeof(file_info) * MAX_FILES, MPI_BYTE, i, DOWNLOAD, MPI_COMM_WORLD);
 
     // **************** WAIT TO COMPLETE **************** //
     for(int i = 1 ; i < numtasks ; i++) {
@@ -287,7 +305,6 @@ void tracker(int numtasks, int rank) {
     }
 
 }
-
 
 // for every client
 void peer(int numtasks, int rank) {
@@ -450,9 +467,11 @@ int main (int argc, char *argv[]) {
     MPI_Comm_size(MPI_COMM_WORLD, &numtasks);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
+    // start tracker
     if (rank == TRACKER_RANK) {
         tracker(numtasks, rank);
     } else {
+        // start peers
         peer(numtasks, rank);
     }
 
