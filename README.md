@@ -1,6 +1,6 @@
 # README 
-##### MARIN MARIUS DANIEL 332CC
 ## [Tema3 - APD](https://gitlab.cs.pub.ro/apd/tema3)
+##### MARIN MARIUS DANIEL 332CC
 
 ### Ideea de baza
 Implementarea logicii unui `tracker`, ce are ca rol gestionarea
